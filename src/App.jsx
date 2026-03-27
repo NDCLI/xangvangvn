@@ -2,18 +2,7 @@ import { startTransition, useCallback, useEffect, useState } from 'react'
 import './App.css'
 
 const REFRESH_INTERVAL_MS = 120000
-const PETROLIMEX_BACNINH_PRICE_REQUEST = {
-  FilterBy: {
-    And: [
-      { SystemID: { Equals: '6783dc1271ff449e95b74a9520964169' } },
-      { RepositoryID: { Equals: 'a95451e23b474fe5886bfb7cf843f53c' } },
-      { RepositoryEntityID: { Equals: '3801378fe1e045b1afa10de7c5776124' } },
-      { Status: { Equals: 'Published' } },
-    ],
-  },
-  SortBy: { LastModified: 'Descending' },
-  Pagination: { TotalRecords: -1, TotalPages: 0, PageSize: 0, PageNumber: 0 },
-}
+const GIAXANGHOMNAY_URL = 'https://giaxanghomnay.com/'
 const PROXY_BUILDERS = [
   (targetUrl) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
   (targetUrl) => `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
@@ -56,9 +45,8 @@ function encodeBase64Url(value) {
   return btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
-function buildPetrolimexBacNinhFuelUrl() {
-  const request = encodeBase64Url(JSON.stringify(PETROLIMEX_BACNINH_PRICE_REQUEST))
-  return `https://bacninh.petrolimex.com.vn/~apis/portals/cms.item/search?object-identity=search&x-request=${request}`
+function buildPetrolimexFuelUrl() {
+  return GIAXANGHOMNAY_URL
 }
 
 function formatFriendlyDateTime(timestamp) {
@@ -259,50 +247,56 @@ function parseFuelChangeData(html) {
   )
 }
 
-function parseFuelData(data, changeByName = new Map()) {
-  const objects = Array.isArray(data?.Objects) ? data.Objects : []
+function parseFuelData(html) {
+  const documentNode = new DOMParser().parseFromString(html, 'text/html')
+  const table = documentNode.querySelector('table')
 
-  if (objects.length === 0) {
-    throw new Error('Không đọc được bảng giá xăng dầu từ Petrolimex.')
+  if (!table) {
+    throw new Error('Không tìm thấy bảng giá xăng dầu từ giaxanghomnay.com.')
   }
 
-  const items = [...objects]
-    .sort((left, right) => {
-      const leftOrder = Number(left.DIsplayOrder ?? left.OrderIndex ?? 0)
-      const rightOrder = Number(right.DIsplayOrder ?? right.OrderIndex ?? 0)
-      return leftOrder - rightOrder
+  const rows = [...table.querySelectorAll('tbody tr')]
+  const items = rows
+    .map((row) => {
+      const cells = [...row.querySelectorAll('td')].map((cell) => normalizeText(cell.textContent || ''))
+      if (cells.length < 5) return null
+
+      return {
+        name: cells[0],
+        changeText: cells[1] === '0' ? '--' : cells[1],
+        priceValueZone1: parseNumericPrice(cells[3]),
+        priceValueZone2: parseNumericPrice(cells[4]),
+      }
     })
-    .map((item) => ({
-      name: normalizeText(item.Title || item.EnglishTitle || ''),
-      priceValue: Number(item.Zone1Price || 0),
-      changeText: changeByName.get(normalizeFuelName(item.Title || item.EnglishTitle || '')) || '--',
-    }))
-    .filter((item) => item.name && item.priceValue > 0)
+    .filter((item) => item && (item.priceValueZone1 > 0 || item.priceValueZone2 > 0))
 
   if (items.length === 0) {
-    throw new Error('Không đọc được giá bán lẻ xăng dầu từ Petrolimex.')
+    throw new Error('Không đọc được giá bán lẻ xăng dầu từ nguồn.')
   }
 
+  // Get update time from the page if possible
+  const updateInfo = documentNode.querySelector('.entry-content p')?.textContent || ''
+  const effectiveText = updateInfo.includes('cập nhật') 
+    ? updateInfo.split('cập nhật')[1].trim() 
+    : formatFriendlyDateTime(Date.now())
+
   return {
-    source: 'Petrolimex',
-    title: 'Bảng giá xăng dầu trong nước',
-    effectiveText: formatFriendlyDateTime(getPetrolimexUpdatedTime(objects)),
+    source: 'GiaXangHomNay',
+    title: 'Bảng giá xăng dầu Petrolimex',
+    effectiveText: effectiveText || 'Cập nhật mới nhất',
     items,
   }
 }
 
 async function loadVietnamesePrices() {
-  const [goldHtml, fuelData, fuelChangeHtml] = await Promise.all([
+  const [goldHtml, fuelHtml] = await Promise.all([
     fetchHtmlWithFallback('https://vangsinhdien.com/'),
-    fetchJsonWithFallback(buildPetrolimexBacNinhFuelUrl()),
-    fetchHtmlWithFallback('https://www.pvoil.com.vn/tin-gia-xang-dau'),
+    fetchHtmlWithFallback(buildPetrolimexFuelUrl()),
   ])
-
-  const fuelChanges = parseFuelChangeData(fuelChangeHtml)
 
   return {
     gold: parseGoldData(goldHtml),
-    fuel: parseFuelData(fuelData, fuelChanges),
+    fuel: parseFuelData(fuelHtml),
   }
 }
 
@@ -492,7 +486,8 @@ function App() {
                     <thead>
                       <tr>
                         <th>Loại xăng / dầu</th>
-                        <th>Giá bán lẻ</th>
+                        <th>Vùng 1</th>
+                        <th>Vùng 2</th>
                         <th>Biến động</th>
                       </tr>
                     </thead>
@@ -500,8 +495,9 @@ function App() {
                       {marketData.fuel.items.map((item) => (
                         <tr key={item.name}>
                           <td className="fuel-name">{item.name}</td>
-                          <td>{formatNumber(item.priceValue)} đ</td>
-                          <td className={item.changeText.startsWith('+') ? 'up' : item.changeText.startsWith('-') ? 'down' : ''}>
+                          <td>{formatNumber(item.priceValueZone1)} đ</td>
+                          <td>{formatNumber(item.priceValueZone2)} đ</td>
+                          <td className={item.changeText.includes('▲') || (item.changeText !== '--' && !item.changeText.includes('▼') && parseFloat(item.changeText) > 0) ? 'up' : item.changeText.includes('▼') || (item.changeText !== '--' && parseFloat(item.changeText) < 0) ? 'down' : ''}>
                             {item.changeText}
                           </td>
                         </tr>
