@@ -353,7 +353,7 @@ function App() {
     <main className="dashboard-shell">
       <section className="hero-panel">
         <div className="hero-copy">
-          <p className="hero-kicker">Công cụ theo dõi giá vàng và xăng dầu trong nước</p>
+          <p className="hero-kicker">Theo dõi giá vàng và xăng dầu trong nước</p>
         </div>
 
         <div className="hero-meta">
